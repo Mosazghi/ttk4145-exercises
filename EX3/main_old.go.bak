@@ -1,0 +1,161 @@
+package main
+
+import (
+	"SingleElevator/elevio"
+	"fmt"
+	"time"
+)
+
+type Behavior int
+
+const (
+	IDLE Behavior = iota
+	MOVING
+	DOOROPEN
+)
+
+var numFloors = 4
+type Order struct {
+	floor int
+	rType elevio.ButtonType
+}
+
+type ElevState struct {
+	target     Order
+	currFloor  int
+	dir        elevio.MotorDirection
+	behavior   Behavior
+	orders     [4][3]bool
+}
+
+func main() {
+	
+	s := ElevState{
+		Order{-1, elevio.BT_Cab},
+		-1,
+		elevio.MD_Stop,
+		IDLE,
+		[4][3]bool{},
+	}
+
+	elevio.Init("localhost:15657", numFloors)
+
+	// elevio.SetMotorDirection(d)
+
+	drv_buttons := make(chan elevio.ButtonEvent)
+	drv_floors := make(chan int)
+	drv_obstr := make(chan bool)
+	drv_stop := make(chan bool)
+
+	go elevio.PollButtons(drv_buttons)
+	go elevio.PollFloorSensor(drv_floors)
+	go elevio.PollObstructionSwitch(drv_obstr)
+	go elevio.PollStopButton(drv_stop)
+	s.currFloor = elevio.GetFloor()
+	go stateMachine(&s, drv_buttons, drv_floors, drv_obstr, drv_stop)
+
+	printState := func() {
+		fmt.Printf("State: %+v\n", s)
+	}
+
+	for {
+		select {
+		case a := <-drv_buttons:
+			fmt.Printf("[BTNS] %+v\n", a)
+			elevio.SetButtonLamp(a.Button, a.Floor, true)
+			s.orders[a.Floor][a.Button] = true
+			printState()
+
+		case a := <-drv_floors:
+			fmt.Printf("[FLOORS] %+v\n", a)
+			if a == numFloors-1 {
+				s.dir = elevio.MD_Down
+			} else if a == 0 {
+				s.dir = elevio.MD_Up
+			}
+			s.currFloor = a
+			elevio.SetFloorIndicator(s.currFloor)
+			printState()
+
+		case a := <-drv_obstr:
+			fmt.Printf("[OBSTR] %+v\n", a)
+			if a {
+				elevio.SetMotorDirection(elevio.MD_Stop)
+			} else {
+				elevio.SetMotorDirection(s.dir)
+			}
+			printState()
+
+		case a := <-drv_stop:
+			fmt.Printf("[STOP] %+v\n", a)
+			for f := 0; f < numFloors; f++ {
+				for b := elevio.ButtonType(0); b < 3; b++ {
+					elevio.SetButtonLamp(b, f, false)
+				}
+			}
+			printState()
+		}
+	}
+	
+	
+}
+func stateMachine(s *ElevState, drv_buttons chan elevio.ButtonEvent, drv_floors chan int, drv_obstr chan bool, drv_stop chan bool) {
+		prevFloor := -1
+	for {
+			switch s.behavior {
+			case IDLE:
+				if s.target.floor == -1 {
+					// Check for any active orders
+					found := false
+					for f := 0; f < numFloors && !found; f++ {
+						for b := elevio.ButtonType(0); b < 3 && !found; b++ {
+							if s.orders[f][b] {
+								s.target.floor = f
+								s.target.rType = b
+								found = true
+							}
+						}
+					}
+					
+					if found {
+						fmt.Println("Target floor set to:", s.target.floor)
+						elevio.SetDoorOpenLamp(false)
+						s.behavior = MOVING
+					}
+				}
+			case MOVING:
+				tF := s.target.floor
+				cF := s.currFloor
+				fmt.Println("Moving. Current floor:", cF, "Target floor:", tF)
+
+				// only decide direction when arrived at NEW floor
+				if cF != prevFloor {
+					prevFloor = cF
+					if tF == cF {
+						s.behavior = DOOROPEN
+					} else if tF > cF {
+						s.dir = elevio.MD_Up
+						elevio.SetMotorDirection(s.dir)
+					} else {
+						s.dir = elevio.MD_Down
+						elevio.SetMotorDirection(s.dir)
+					}
+				}
+
+			case DOOROPEN:
+				fmt.Println("Door open at floor:", s.currFloor)
+				elevio.SetStopLamp(true)
+				elevio.SetButtonLamp(s.target.rType, s.currFloor, false)
+				s.orders[s.currFloor][s.target.rType] = false
+				s.target.floor = -1
+				s.target.rType = elevio.BT_Cab
+				s.dir = elevio.MD_Stop
+				elevio.SetMotorDirection(s.dir)
+				s.behavior = IDLE
+				elevio.SetDoorOpenLamp(true)
+				time.Sleep(time.Second)
+				elevio.SetDoorOpenLamp(false)
+			}
+			time.Sleep(25 * time.Millisecond)
+		}
+}
