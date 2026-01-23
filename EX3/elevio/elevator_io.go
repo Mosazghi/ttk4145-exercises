@@ -1,7 +1,6 @@
 package elevio
 
 import (
-	"fmt"
 	"net"
 	"sync"
 	"time"
@@ -9,12 +8,30 @@ import (
 
 const _pollRate = 20 * time.Millisecond
 
-var (
-	_initialized bool = false
-	_numFloors   int  = 4
-	_mtx         sync.Mutex
-	_conn        net.Conn
-)
+type ElevatorDriver interface {
+	ReadInitialButtons() [4][3]bool
+	SetMotorDirection(dir MotorDirection)
+	SetButtonLamp(button ButtonType, floor int, value bool)
+	SetFloorIndicator(floor int)
+	SetDoorOpenLamp(value bool)
+	SetStopLamp(value bool)
+	GetButton(button ButtonType, floor int) bool
+	GetFloor() int
+	GetStop() bool
+	GetTotalFloors() int
+	GetObstruction() bool
+	PollButtons(receiver chan<- ButtonEvent)
+	PollFloorSensor(receiver chan<- int)
+	PollStopButton(receiver chan<- bool)
+	PollObstructionSwitch(receiver chan<- bool)
+}
+
+// ElevIoDriver is a struct that implements the ElevatorDriver interface
+type ElevIoDriver struct {
+	numFloors int
+	mtx       sync.Mutex
+	conn      net.Conn
+}
 
 type MotorDirection int
 
@@ -37,48 +54,63 @@ type ButtonEvent struct {
 	Button ButtonType
 }
 
-func Init(addr string, numFloors int) {
-	if _initialized {
-		fmt.Println("Driver already initialized!")
-		return
-	}
-	_numFloors = numFloors
-	_mtx = sync.Mutex{}
-	var err error
-	_conn, err = net.Dial("tcp", addr)
+// NewElevator creates and initializes a new Elevator instance
+func NewElevIoDriver(addr string, numFloors int) *ElevIoDriver {
+	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		panic(err.Error())
 	}
-	_initialized = true
+	return &ElevIoDriver{
+		numFloors: numFloors,
+		mtx:       sync.Mutex{},
+		conn:      conn,
+	}
 }
 
-func SetMotorDirection(dir MotorDirection) {
-	write([4]byte{1, byte(dir), 0, 0})
+func (e *ElevIoDriver) GetTotalFloors() int {
+	return e.numFloors
 }
 
-func SetButtonLamp(button ButtonType, floor int, value bool) {
-	write([4]byte{2, byte(button), byte(floor), toByte(value)})
+func (e *ElevIoDriver) ReadInitialButtons() [4][3]bool {
+	var orders [4][3]bool
+	for f := range orders {
+		for b := range orders[f] {
+			if e.GetButton(ButtonType(b), f) {
+				orders[f][b] = true
+			}
+		}
+	}
+	return orders
 }
 
-func SetFloorIndicator(floor int) {
-	write([4]byte{3, byte(floor), 0, 0})
+
+func (e *ElevIoDriver) SetMotorDirection(dir MotorDirection) {
+	e.write([4]byte{1, byte(dir), 0, 0})
 }
 
-func SetDoorOpenLamp(value bool) {
-	write([4]byte{4, toByte(value), 0, 0})
+func (e *ElevIoDriver) SetButtonLamp(button ButtonType, floor int, value bool) {
+	e.write([4]byte{2, byte(button), byte(floor), toByte(value)})
 }
 
-func SetStopLamp(value bool) {
-	write([4]byte{5, toByte(value), 0, 0})
+func (e *ElevIoDriver) SetFloorIndicator(floor int) {
+	e.write([4]byte{3, byte(floor), 0, 0})
 }
 
-func PollButtons(receiver chan<- ButtonEvent) {
-	prev := make([][3]bool, _numFloors)
+func (e *ElevIoDriver) SetDoorOpenLamp(value bool) {
+	e.write([4]byte{4, toByte(value), 0, 0})
+}
+
+func (e *ElevIoDriver) SetStopLamp(value bool) {
+	e.write([4]byte{5, toByte(value), 0, 0})
+}
+
+func (e *ElevIoDriver) PollButtons(receiver chan<- ButtonEvent) {
+	prev := make([][3]bool, e.numFloors)
 	for {
 		time.Sleep(_pollRate)
-		for f := 0; f < _numFloors; f++ {
+		for f := 0; f < e.numFloors; f++ {
 			for b := ButtonType(0); b < 3; b++ {
-				v := GetButton(b, f)
+				v := e.GetButton(b, f)
 				if v != prev[f][b] && v != false {
 					receiver <- ButtonEvent{f, ButtonType(b)}
 				}
@@ -88,11 +120,11 @@ func PollButtons(receiver chan<- ButtonEvent) {
 	}
 }
 
-func PollFloorSensor(receiver chan<- int) {
+func (e *ElevIoDriver) PollFloorSensor(receiver chan<- int) {
 	prev := -1
 	for {
 		time.Sleep(_pollRate)
-		v := GetFloor()
+		v := e.GetFloor()
 		if v != prev && v != -1 {
 			receiver <- v
 		}
@@ -100,11 +132,11 @@ func PollFloorSensor(receiver chan<- int) {
 	}
 }
 
-func PollStopButton(receiver chan<- bool) {
+func (e *ElevIoDriver) PollStopButton(receiver chan<- bool) {
 	prev := false
 	for {
 		time.Sleep(_pollRate)
-		v := GetStop()
+		v := e.GetStop()
 		if v != prev {
 			receiver <- v
 		}
@@ -112,11 +144,11 @@ func PollStopButton(receiver chan<- bool) {
 	}
 }
 
-func PollObstructionSwitch(receiver chan<- bool) {
+func (e *ElevIoDriver) PollObstructionSwitch(receiver chan<- bool) {
 	prev := false
 	for {
 		time.Sleep(_pollRate)
-		v := GetObstruction()
+		v := e.GetObstruction()
 		if v != prev {
 			receiver <- v
 		}
@@ -124,13 +156,13 @@ func PollObstructionSwitch(receiver chan<- bool) {
 	}
 }
 
-func GetButton(button ButtonType, floor int) bool {
-	a := read([4]byte{6, byte(button), byte(floor), 0})
+func (e *ElevIoDriver) GetButton(button ButtonType, floor int) bool {
+	a := e.read([4]byte{6, byte(button), byte(floor), 0})
 	return toBool(a[1])
 }
 
-func GetFloor() int {
-	a := read([4]byte{7, 0, 0, 0})
+func (e *ElevIoDriver) GetFloor() int {
+	a := e.read([4]byte{7, 0, 0, 0})
 	if a[1] != 0 {
 		return int(a[2])
 	} else {
@@ -138,27 +170,27 @@ func GetFloor() int {
 	}
 }
 
-func GetStop() bool {
-	a := read([4]byte{8, 0, 0, 0})
+func (e *ElevIoDriver) GetStop() bool {
+	a := e.read([4]byte{8, 0, 0, 0})
 	return toBool(a[1])
 }
 
-func GetObstruction() bool {
-	a := read([4]byte{9, 0, 0, 0})
+func (e *ElevIoDriver) GetObstruction() bool {
+	a := e.read([4]byte{9, 0, 0, 0})
 	return toBool(a[1])
 }
 
-func read(in [4]byte) [4]byte {
-	_mtx.Lock()
-	defer _mtx.Unlock()
+func (e *ElevIoDriver) read(in [4]byte) [4]byte {
+	e.mtx.Lock()
+	defer e.mtx.Unlock()
 
-	_, err := _conn.Write(in[:])
+	_, err := e.conn.Write(in[:])
 	if err != nil {
 		panic("Lost connection to Elevator Server")
 	}
 
 	var out [4]byte
-	_, err = _conn.Read(out[:])
+	_, err = e.conn.Read(out[:])
 	if err != nil {
 		panic("Lost connection to Elevator Server")
 	}
@@ -166,11 +198,11 @@ func read(in [4]byte) [4]byte {
 	return out
 }
 
-func write(in [4]byte) {
-	_mtx.Lock()
-	defer _mtx.Unlock()
+func (e *ElevIoDriver) write(in [4]byte) {
+	e.mtx.Lock()
+	defer e.mtx.Unlock()
 
-	_, err := _conn.Write(in[:])
+	_, err := e.conn.Write(in[:])
 	if err != nil {
 		panic("Lost connection to Elevator Server")
 	}

@@ -2,18 +2,36 @@ package main
 
 import (
 	"bufio"
+	"context"
+	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
-	"sync"
+	"strings"
 )
 
-const SERVER_IP = "10.100.23.11"
-const SERVER_PORT = "34933"
+const (
+	ServerPort = "34933"
+)
 
-func tcpListener() (net.Conn, error) {
+var localIP string
+
+func LocalIP() (string, error) {
+	if localIP == "" {
+		conn, err := net.DialTCP("tcp4", nil, &net.TCPAddr{IP: []byte{8, 8, 8, 8}, Port: 53})
+		if err != nil {
+			return "", err
+		}
+		defer conn.Close()
+		localIP = strings.Split(conn.LocalAddr().String(), ":")[0]
+	}
+	return localIP, nil
+}
+
+func tcpListener(serverIP string) (net.Conn, error) {
 	fmt.Println("Listening...")
-	addr, err := net.ResolveTCPAddr("tcp", SERVER_IP+":"+SERVER_PORT)
+	addr, err := net.ResolveTCPAddr("tcp", serverIP+":"+ServerPort)
 	if err != nil {
 		fmt.Println("[ECHO] Error resolving addr: ", err)
 		return nil, err
@@ -27,15 +45,20 @@ func tcpListener() (net.Conn, error) {
 	return conn, nil
 }
 
-func tcpReceiver(conn net.Conn, recvChan chan string, wg *sync.WaitGroup) {
-	defer wg.Done()
-
+func tcpReceiver(ctx context.Context, cancel context.CancelFunc, conn net.Conn, recvChan chan string) {
+	defer conn.Close()
+	defer cancel()
 	buffer := make([]byte, 1024)
 	for {
 		n, err := conn.Read(buffer)
 		if err != nil {
-			fmt.Println("Err reading...", err)
-			return
+			switch {
+			case errors.Is(err, io.EOF), errors.Is(err, io.ErrClosedPipe):
+				fmt.Println("EOF")
+			default:
+				fmt.Println("Unknwon error, ", err.Error())
+			}
+			return 
 		}
 		data := string(buffer[:n])
 		recvChan <- data
@@ -43,14 +66,18 @@ func tcpReceiver(conn net.Conn, recvChan chan string, wg *sync.WaitGroup) {
 	}
 }
 
-func tcpSender(conn net.Conn, inputChan chan string, wg *sync.WaitGroup) {
-	defer wg.Done()
+func tcpSender(ctx context.Context, conn net.Conn, inputChan chan string) {
 	msgReader := bufio.NewReader(os.Stdin)
 	fmt.Println("[SENDER] Connected to ", conn.LocalAddr())
-
 	defer conn.Close()
 	buffer := make([]byte, 1024)
 	for {
+
+		select {
+		case <-ctx.Done():
+			fmt.Println("Sender done")
+			return
+		default:
 		// fmt.Print("> ")
 		n, err := msgReader.Read(buffer)
 		// message = strings.TrimSuffix(message, "\n")
@@ -70,31 +97,37 @@ func tcpSender(conn net.Conn, inputChan chan string, wg *sync.WaitGroup) {
 		inputChan <- string(buffer[:n])
 	}
 }
-
-func server(echoChan, senderChan chan string) {
-	for {
-		select {
-		case data := <-echoChan:
-			fmt.Printf("[RECV]: %v\n", data)
-		case input := <-senderChan:
-			fmt.Printf("[SENDER]: %v\n", input)
-		}
-	}
 }
 
+
 func main() {
-	var wg sync.WaitGroup
 	recvBuf := make(chan string)
 	inputBuf := make(chan string)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
-	conn, err := tcpListener()
+	ip, err := LocalIP()
 	if err != nil {
 		panic(err)
 	}
 
-	wg.Add(2)
-	go tcpReceiver(conn, recvBuf, &wg)
-	go tcpSender(conn, inputBuf, &wg)
-	go server(recvBuf, inputBuf)
-	wg.Wait()
+	conn, err := tcpListener(ip)
+	if err != nil {
+		panic(err)
+	}
+
+	go tcpReceiver(ctx, cancel, conn, recvBuf)
+	go tcpSender(ctx,  conn, inputBuf)
+	for { 
+		select {
+			case <-ctx.Done():
+				fmt.Println("Main done")
+				return 
+			case msg := <-recvBuf:
+				fmt.Printf("[RECV] %s", msg)
+			case msg := <-inputBuf:
+				fmt.Printf("[SENT] %s", msg)
+
+		}
+	}
 }

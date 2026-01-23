@@ -12,12 +12,14 @@ import (
 	"time"
 )
 
-const SENDER_PORT = 20023
+const SENDER_PORT = 20025
 
-const SERVER_IP = "10.100.23.11"
-const SENDER_IP = SERVER_IP + ":200" + "23"
-const ECHO_IP = SERVER_IP + ":200" + "23"
-const BROADCAST_IP = "0.0.0.0" + ":30000"
+const (
+	SERVER_IP    = "10.22.126.117"
+	SENDER_IP    = SERVER_IP + ":200" + "25"
+	ECHO_IP      = SERVER_IP + ":200" + "25"
+	BROADCAST_IP = "0.0.0.0" + ":30000"
+)
 
 func DialBroadcastUDP(port int) (net.PacketConn, error) {
 	s, err := syscall.Socket(syscall.AF_INET, syscall.SOCK_DGRAM, syscall.IPPROTO_UDP)
@@ -55,8 +57,7 @@ func DialBroadcastUDP(port int) (net.PacketConn, error) {
 func udpSender(wg *sync.WaitGroup, inputChan chan string) {
 	defer wg.Done()
 	msgReader := bufio.NewReader(os.Stdin)
-	conn, err := DialBroadcastUDP(20023)
-
+	conn, err := DialBroadcastUDP(SENDER_PORT)
 	if err != nil {
 		panic(err)
 	}
@@ -124,8 +125,7 @@ func udpBroadCastRecv(wg *sync.WaitGroup, broadCastChan chan<- string) {
 func udpEchoRecv(wg *sync.WaitGroup, echoChan chan<- string) {
 	defer wg.Done()
 
-	conn, err := DialBroadcastUDP(20023)
-
+	conn, err := DialBroadcastUDP(SENDER_PORT)
 	if err != nil {
 		panic(err)
 	}
