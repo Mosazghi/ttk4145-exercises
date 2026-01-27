@@ -12,12 +12,12 @@ import (
 	"time"
 )
 
-const SENDER_PORT = 12312
+const SENDER_PORT = 20025
 
 const (
-	SERVER_IP    = "192.168.0.164"
-	SENDER_IP    = SERVER_IP + ":20000"
-	ECHO_IP      = SERVER_IP + ":20000"
+	SERVER_IP    = "192.168.0.123"
+	SENDER_IP    = SERVER_IP + ":200" + "25"
+	ECHO_IP      = SERVER_IP + ":200" + "25"
 	BROADCAST_IP = "0.0.0.0" + ":30000"
 )
 
@@ -87,7 +87,6 @@ func udpSender(wg *sync.WaitGroup, inputChan chan string) {
 		if err != nil {
 			fmt.Println("ERROR: Write failed")
 		}
-		fmt.Println("Sent to: ", senderIpAddr)
 		inputChan <- string(message)
 
 		time.Sleep(10 * time.Millisecond)
@@ -123,6 +122,31 @@ func udpBroadCastRecv(wg *sync.WaitGroup, broadCastChan chan<- string) {
 	}
 }
 
+func udpEchoRecv(wg *sync.WaitGroup, echoChan chan<- string) {
+	defer wg.Done()
+
+	conn, err := DialBroadcastUDP(SENDER_PORT)
+	if err != nil {
+		panic(err)
+	}
+
+	defer conn.Close()
+
+	fmt.Println("[ECHO] Connected to ", conn.LocalAddr())
+
+	buffer := make([]byte, 1024)
+
+	for {
+		n, _, err := conn.ReadFrom(buffer)
+		if err != nil {
+			log.Printf("Error reading from udp: %v\n", err)
+		}
+
+		data := buffer[:n]
+		echoChan <- string(data)
+	}
+}
+
 func server(broadCastChan, senderChan, echoChan chan string) {
 	for {
 		select {
@@ -144,6 +168,7 @@ func main() {
 	wg.Add(3)
 	go udpSender(&wg, senderChan)
 	go udpBroadCastRecv(&wg, broadCastChan)
+	go udpEchoRecv(&wg, echoChan)
 	go server(broadCastChan, senderChan, echoChan)
 	wg.Wait()
 }
