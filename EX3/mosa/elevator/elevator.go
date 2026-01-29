@@ -3,6 +3,7 @@ package elevator
 
 import (
 	"fmt"
+	"time"
 
 	"SingleElevator/elevio"
 )
@@ -85,16 +86,17 @@ func (e *ElevState) OnInitBetweenFloors() {
 
 func (e *ElevState) OnOrderRequest(order elevio.ButtonEvent) {
 	fmt.Printf("[ORDER] %+v\n", order)
+	e.io.SetButtonLamp(order.Button, order.Floor, true)
+	e.Orders[order.Floor][order.Button] = true
 	switch e.Behavior {
 	case Idle:
 		// Mark as active
-		e.Orders[order.Floor][order.Button] = true
 
 		// Set Target floor
 		e.Target.RType = order.Button
 		e.Target.Floor = order.Floor
 
-		e.Dir = ChooseDirection(e)
+		e.Dir, e.Behavior = ChooseDirection(e)
 
 		e.io.SetMotorDirection(e.Dir)
 
@@ -107,6 +109,7 @@ func (e *ElevState) OnOrderRequest(order elevio.ButtonEvent) {
 
 func (e *ElevState) OnNewFloorArrival(floor int) {
 	fmt.Printf("[FLOOR] %+v\n", floor)
+	fmt.Printf("STATE: %+v\n", e)
 	// if floor == e.io.GetTotalFloors()-1 {
 	// 	e.Dir = elevio.MD_Down
 	// } else if floor == 0 {
@@ -122,7 +125,12 @@ func (e *ElevState) OnNewFloorArrival(floor int) {
 			// stop
 			e.Dir = elevio.Stop
 			e.io.SetMotorDirection(e.Dir)
+			ClearAtCurrentFloor(e)
+			e.SetAllLights()
 			e.io.SetDoorOpenLamp(true)
+			time.Sleep(3 * time.Second)
+			e.io.SetDoorOpenLamp(false)
+			e.Dir, e.Behavior = ChooseDirection(e)
 		}
 	}
 }
@@ -140,13 +148,23 @@ func (e *ElevState) OnObstructionSignal(obstructed bool) {
 
 func (e *ElevState) OnStopSignal(stop bool) {
 	fmt.Printf("[STOP] %+v\n", stop)
-	for f := 0; f < e.io.GetTotalFloors(); f++ {
-		for b := elevio.ButtonType(0); b < 3; b++ {
-			e.io.SetButtonLamp(b, f, false)
+	for f := range e.Orders {
+		for b := range e.Orders[f] {
+			e.io.SetButtonLamp(elevio.ButtonType(b), f, false)
 		}
 	}
 
 	fmt.Printf("State: %v\n", e)
+}
+
+func (e *ElevState) SetAllLights() {
+	for f := range e.Orders {
+		for b := range e.Orders[f] {
+			fmt.Printf("F: %v, B: %v, on: %v ", elevio.ButtonType(b), f, e.Orders[f][b])
+			e.io.SetButtonLamp(elevio.ButtonType(b), f, e.Orders[f][b])
+		}
+		fmt.Println()
+	}
 }
 
 // <-ticker.C:

@@ -58,19 +58,31 @@ func ShouldStop(e *ElevState) bool {
 }
 
 func ChooseDirection(e *ElevState) (elevio.MotorDirection, Behavior) {
-	if e.CurrFloor < e.Target.Floor {
-		return elevio.Up, Moving
-	}
+	switch e.Dir {
+	case elevio.Up:
+	case elevio.Down:
+	case elevio.Stop:
+		if HasOrdersAbove(e) {
+			return elevio.Up, Moving
+		}
 
-	if e.CurrFloor > e.Target.Floor {
-		return elevio.Down, Moving
+		if HasOrdersBelow(e) {
+			return elevio.Down, Moving
+		}
 	}
-
-	return elevio.Stop, DoorOpen
+	return elevio.Stop, Idle
 }
 
 func ClearAtCurrentFloor(e *ElevState) {
 	e.Orders[e.CurrFloor][elevio.Cab] = false
+
+	if e.Orders[e.CurrFloor][elevio.HallUp] {
+		e.Orders[e.CurrFloor][elevio.HallUp] = false
+	}
+
+	if e.Orders[e.CurrFloor][elevio.HallDown] {
+		e.Orders[e.CurrFloor][elevio.HallDown] = false
+	}
 }
 
 func PrintOrders(e *ElevState) {
