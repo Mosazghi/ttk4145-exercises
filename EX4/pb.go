@@ -92,8 +92,17 @@ func backup(switchStateSignal chan int) {
 func primary(initVal int) {
 	fmt.Println("Primary start")
 	count := initVal
-	exec.Command("gnome-terminal", "--", "go", "run", "pb.go").Run()
+	cmd := exec.Command("kitty", "go", "run", "pb.go")
 
+	cmd.SysProcAttr = &syscall.SysProcAttr{
+		Setpgid: true,
+	}
+	err := cmd.Start()
+	if err != nil {
+		panic(err)
+	}
+
+	fmt.Println("Started backup!")
 	conn, err := DialBroadcastUDP(30001)
 	if err != nil {
 		panic(err)
@@ -117,7 +126,6 @@ func primary(initVal int) {
 		fmt.Println("current count: ", count)
 		time.Sleep(50 * time.Millisecond)
 	}
-
 }
 
 func main() {
